@@ -1,20 +1,50 @@
 #include <RF24.h>
-#include<SPI.h>
-
-bool requestString = true;
-long timebetweenrotations;
-#define RADIO_CE_PIN 8
-#define RADIO_CS_PIN 9
-
-//RF24 radio(8, 9); //Define Radio (CE-PIN,CSN-PIN)
-
-RF24 radio = RF24(RADIO_CE_PIN, RADIO_CS_PIN);
-const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
-
+#include <SPI.h>
+#include <TimerOne.h>
+#include <math.h>
 #include <Wire.h>
 #include <Adafruit_AM2315.h>
 #include <Adafruit_BMP280.h>
 
+//time between transmissions
+const int tranmissionDelayTime = 5000;
+bool requestString = true;
+String weather;
+
+//defines settings for RF24ghz Transceiver
+//RF24 radio(8, 9); //Define Radio (CE-PIN,CSN-PIN)
+#define RADIO_CE_PIN 8
+#define RADIO_CS_PIN 9
+RF24 radio = RF24(RADIO_CE_PIN, RADIO_CS_PIN);
+const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
+
+//used to define max buffer size of wireless transmission
+int sizeWeather;
+
+
+#define WindSensorPin (2) //define pin for WindSpeedSensor
+//wind speed in km
+volatile float windspeed;
+volatile bool IsSampleRequired; // this is set true every 2.5s. Get wind speed 
+volatile unsigned int TimerCount; // used to determine 2.5sec timer count 
+volatile unsigned long Rotations; // cup rotation counter used in interrupt routine 
+volatile unsigned long ContactBounceTime; // Timer to avoid contact bounce in isr 
+//float WindSpeed;
+
+//tipping bucket collector diamter 90mm
+//volumne of bucket .7mm
+//amount im mm with every tip 0.1mm
+//connect one wire to ground
+//connect 2nd wire to pin digital interrupt pin 2(phyiscally labelled ~3)
+#define TippingBucketPin (3)//define pin for Tipping Bucket Sensor
+
+//number of times the buckets has tipped
+volatile int tippingBucketTips = 0;
+volatile long lastRiseTimeRain = 0;
+volatile long lastRiseTimeWind = 0;
+
+//defines settings for BMP280 Barometric Sensor
+Adafruit_BMP280 bme;
 #define BMP_SCK 13
 #define BMP_MISO 12
 #define BMP_MOSI 11
@@ -27,20 +57,6 @@ const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 // Connect YELLOW to i2c data to Analog 4
 
 Adafruit_AM2315 am2315;
-Adafruit_BMP280 bme;
-//RH_ASK driver(5000);
-
-String weather;
-//char weatherArray[32];
-
-const int tranmissionDelayTime = 5000;
-int sizeWeather;
-
-//tipping bucket collector diamter 90mm
-//volumne of bucket .7mm
-//amount im mm with every tip 0.1mm
-//connect one wire to ground
-//connect 2nd wire to pin digital interrupt pin 2
 
 //wind direction in degrees
 
@@ -54,42 +70,38 @@ int count;
 int arrayCounter;
 bool RESETCOUNTER;
 
-//wind speed in km
-unsigned long resolution = 0;
-volatile unsigned long rotations;
-volatile double windSpeedCurrent = 0;
-
-//number of times the buckets has tipped
-volatile int tippingBucketTips = 0;
-volatile long lastRiseTimeRain = 0;
-volatile long lastRiseTimeWind = 0;
+//reset function
+//void(* resetFunc) (void) = 0;//declare reset function at address 0
 
 void setup() {
-
-
 
   Serial.begin(9600);
 
   PCICR |= (1 << PCIE2);
   //Enables Interrupt on Pin 9
   pinMode(7, INPUT_PULLUP);
-
   PCMSK2 |= (1 << PCINT23);
 
   lastWindVaneTime = micros();
 
   //enables driver for am2315 temperature and humidty sensor
   if (! am2315.begin()) {
-    //Serial.println("Sensor not found, check wiring & pullups!");
-    while (1);
+    Serial.println("AM2315 (Temp/Humidity) Sensor not found, check wiring & pullups!");
+    //while (1);
+  }else{
+   Serial.println("AM2315 (Temp/Humidity) sensor status OK... continue");
+   delay(1000);
   }
 
 
   // delay(500);
   if (!bme.begin()) {
-    //Serial.println("Could not find a valid BMP280 sensor, check wiring!");
-    while (1);
-  }
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+    //while (1);
+  }else{
+   Serial.println("BM180 (Barometric Pressure) sensor status OK... continue");
+   delay(1000);
+}
 
   /*
     if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
@@ -97,10 +109,11 @@ void setup() {
      //for(;;); // Don't proceed, loop forever
     }
   */
+  
+  //Serial.println("Beginning 2.4ghz Radio transmitter configuration.... ");
 
   radio.begin();
-
-
+  delay(1000);
   radio.setPALevel(RF24_PA_MAX); // Transmit Power (MAX,HIGH,LOW,MIN)
   //Decimal 76 is 0x4c in hexidecimal confirm that you have configured correctly on both sides
   radio.setChannel(76);
@@ -113,21 +126,38 @@ void setup() {
   // Disable Receiver
   radio.stopListening();
 
+  IsSampleRequired = false; 
+  
+  TimerCount = 0; 
+  Rotations = 0; // Set Rotations to 0 ready for calculations 
+
   //configure interrupt for tipping bucket scale
 
-  pinMode(2, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(2), rainISR, FALLING);
+  pinMode(TippingBucketPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(TippingBucketPin), rainISR, FALLING);
 
   //configure interrupt for wind speed
-  pinMode(3, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(3), windISR, FALLING);
+  pinMode(WindSensorPin, INPUT_PULLUP); 
+  attachInterrupt(digitalPinToInterrupt(WindSensorPin), windISR, FALLING); 
 
+  Timer1.initialize(500000);// Timer interrupt every 2.5 seconds 
+  Timer1.attachInterrupt(windISR_timer);
 }
 
 void loop() {
 
+    if(IsSampleRequired) { 
+    // convert to mp/h using the formula V=P(2.25/T) 
+    // V = P(2.25/2.5) = P * 0.9 
+    windspeed = getKiloMeters(Rotations * 0.9); 
+    Rotations = 0; // Reset count for next sample 
+    
+    IsSampleRequired = false; 
+
+    } 
+
   delay(tranmissionDelayTime);
-  windSpeedCurrent = rotations * resolution;
+  //windSpeedCurrent = rotations * resolution;
 
   if(requestString){
   PCMSK2 &= ~(1 << PCINT23);
@@ -223,55 +253,26 @@ void rainISR() {
 
 }
 
-void windISRmillis() {
-
-  //If more than 10 ms has elapsed since the last time pin 2 went high
-  if ((millis() - lastRiseTimeWind) > 20)
-  {
-
-    rotations++;
-    timebetweenrotations = millis() - lastRiseTimeWind ;
-  }
-  //float oldTime = lastRiseTimeWind;
-  
-  //timebetweenrotations = millis() - lastRiseTimeWind ;
- 
-  lastRiseTimeWind = millis();
-  
-
-}
-
-void windISR() {
-
-  //If more than 10 ms has elapsed since the last time pin 2 went high
-  if ((micros() - lastRiseTimeWind) > 20)
-  {
-
-    rotations++;
-    timebetweenrotations = micros() - lastRiseTimeWind ;
-  }
-  //float oldTime = lastRiseTimeWind;
-  
-  //timebetweenrotations = millis() - lastRiseTimeWind ;
- 
-  lastRiseTimeWind = micros();
-  
-
-}
 
 void generateWeatherString() {
-  weather = "Temp ";
-  weather.concat(int(am2315.readTemperature() * 100));
-  weather.concat(",Humid ");
-  weather.concat(int(am2315.readHumidity() * 100));
-  weather.concat(",Wind Speed ");
+  weather = "Temperature ";
+  weather = "";
+  weather.concat(am2315.readTemperature());
+  weather.concat(",");
+  //weather.concat(",Humidity ");
+  weather.concat(am2315.readHumidity());
+  weather.concat(",");
+  //weather.concat(",Rain Tips ");
   weather.concat(tippingBucketTips);
-  weather.concat(",Wind Direct ");
+  weather.concat(",");
+  //weather.concat(",Wind Direct ");
   weather.concat(windVaneDirection);
+  weather.concat(",");
   //weather.concat(int(windVaneDirection,HEX));
-  weather.concat(",Rain ");
-  weather.concat(rotations);
-  weather.concat(",Pressure ");
+  //weather.concat(",Wind Speed ");
+  weather.concat(windspeed);
+  weather.concat(",");
+  //weather.concat("Kph ,Pressure ");
   weather.concat(int(bme.readPressure() / 100));
 
   //weather = "Hello World";
@@ -285,10 +286,32 @@ void generateWeatherString() {
   radio.write(&s, sizeof(s));
  
   Serial.println(s);
-  //Serial.print("Time between rotations = ");
-  Serial.print( timebetweenrotations);
-  Serial.println("ms");
   
   PCMSK2 != (1 << PCINT23);
 
 }
+
+void windISR_timer(){
+  
+  TimerCount++; 
+  
+  if(TimerCount == 6){ 
+    IsSampleRequired = true; 
+    TimerCount = 0; 
+    } 
+} 
+
+// This is the function that the interrupt calls to increment the rotation count 
+void windISR() { 
+  
+  if((millis() - ContactBounceTime) > 20 ) { // debounce the switch contact. 
+    Rotations++; 
+    ContactBounceTime = millis(); 
+  } 
+} 
+
+// Convert MPH to KPH 
+float getKiloMeters(float speed) { 
+  return speed * 0.621371; 
+} 
+
