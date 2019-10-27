@@ -1,4 +1,4 @@
-void getWind(){
+void getWindSpeed(){
   
   if(IsSampleRequired) { 
     // convert to mp/h using the formula V=P(2.25/T) 
