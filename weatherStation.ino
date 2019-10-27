@@ -5,6 +5,7 @@
 #include <Adafruit_AM2315.h>
 #include <Adafruit_BMP280.h>
 
+//defines settings for RF24ghz Transceiver
 #define RADIO_CE_PIN 8 //RF24 chip enable pin
 #define RADIO_CS_PIN 9 //RF24 chip select pin
 
@@ -23,10 +24,6 @@ const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 const int tranmissionDelayTime = 2500;
 bool requestString = true;
 String transmitWeatherString;
-
-//defines settings for RF24ghz Transceiver
-
-
 
 int sizeWeather;  //used to define max buffer size of wireless transmission
 
