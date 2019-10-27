@@ -1,3 +1,4 @@
+#include <avr/wdt.h>
 #include <RF24.h>
 #include <SPI.h>
 #include <TimerOne.h>
@@ -5,10 +6,10 @@
 #include <Adafruit_AM2315.h>
 #include <Adafruit_BMP280.h>
 
-//defines settings for RF24ghz Transceiver
 #define RADIO_CE_PIN 8 //RF24 chip enable pin
 #define RADIO_CS_PIN 9 //RF24 chip select pin
 
+//defines settings for RF24ghz Transceiver
 RF24 radio = RF24(RADIO_CE_PIN, RADIO_CS_PIN); //Define Radio (CE-PIN,CSN-PIN)
 const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
@@ -29,13 +30,13 @@ int sizeWeather;  //used to define max buffer size of wireless transmission
 
 volatile float windspeed; //wind speed in km
 volatile bool IsSampleRequired; // this is set true every 2.5s. Get wind speed
-volatile unsigned int TimerCount; // used to determine 2.5sec timer count
+
 volatile unsigned long Rotations; // cup rotation counter used in interrupt routine
 volatile unsigned long ContactBounceTime; // Timer to avoid contact bounce in isr
 
-volatile int tippingBucketTips = 0;   //number of times the buckets has tipped //tipping bucket collector diamter 90mm
-volatile long lastRiseTimeRain = 0;   //volumne of bucket .7mm //amount im mm with every tip 0.1mm //connect one wire to ground
-volatile long lastRiseTimeWind = 0;   //connect 2nd wire to pin digital interrupt pin 2(phyiscally labelled ~3)
+volatile unsigned int TimerCount; // used to determine 2.5sec timer count
+
+volatile int tippingBucketTips = 0;   //number of times the buckets has tipped
 
 Adafruit_BMP280 bme;
 
@@ -114,7 +115,7 @@ void setup() {
   Timer1.initialize(500000);// Timer interrupt every 2.5 seconds
   Timer1.attachInterrupt(windISR_timer);
 
-  Serial.println("Setup complete, program starting...");
+  Serial.println("Startup complete, transmission will begin shortly...");
 
 }
 
@@ -123,20 +124,14 @@ void loop() {
 
   delay(tranmissionDelayTime);
 
-  getWind();
-  if (requestString) {
-    PCMSK2 &= ~(1 << PCINT23);
-    for (int i = 0; i < sizeof(wVD); i++) {
-      // Serial.println(wVD[i]);
-      windVaneDirection.concat(wVD[i]);
-    }
+  getWindSpeed();
+  getWindDirection();
 
-    if (windVaneDirection.length() == 4) {
-      transmit();
-
-    }
+  if (windVaneDirection.length() == 4) {
+    transmit();
 
   }
+
   RESETCOUNTER = false;
   count = 0;
 
@@ -164,7 +159,6 @@ String generateWeatherString() {
   weather.concat(",");
   weather.concat(tippingBucketTips);//tipping bucket tips
   weather.concat(",");
-  //weather.concat(windVaneDirection);//winddirection
   weather.concat(String(convertDirectionToString(windVaneDirection)));//winddirection
   weather.concat(",");
   weather.concat(windspeed);//windspeed
