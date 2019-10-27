@@ -1,0 +1,4 @@
+http://cactus.io/hookups/weather/anemometer/davis/hookup-arduino-to-davis-anemometer-wind-speed
+
+http://dreamerbuilds.com/2018/07/2018-kitesurfing-windsurfing-weather-station/
+
