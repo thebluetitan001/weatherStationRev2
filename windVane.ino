@@ -1,3 +1,14 @@
+void getWindDirection(){
+
+if (requestString) {
+    PCMSK2 &= ~(1 << PCINT23);
+    for (int i = 0; i < sizeof(wVD); i++) {
+      // Serial.println(wVD[i]);
+      windVaneDirection.concat(wVD[i]);
+    }
+
+  }
+}
 ISR(PCINT2_vect) {
 
   //grabs stream of data coming from wind vane, and stores the final 4 bits in a string for transmission
